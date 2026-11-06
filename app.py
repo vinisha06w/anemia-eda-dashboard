@@ -6,6 +6,18 @@ import pandas as pd
 import seaborn as sns
 import streamlit as st
 from scipy.stats import shapiro
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    confusion_matrix
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 # ---------------------------------------------------------
 # PAGE CONFIGURATION
@@ -136,13 +148,14 @@ c2.metric("Columns", total_columns)
 c3.metric("Missing cells", f"{missing_total:,}")
 c4.metric("Duplicate rows in original data", f"{duplicate_total:,}")
 
-tab_overview, tab_distribution, tab_comparison, tab_correlation, tab_data = st.tabs(
+tab_overview, tab_distribution, tab_comparison, tab_correlation, tab_data, tab_prediction = st.tabs(
     [
         "Overview & Statistics",
         "Distributions",
         "Anemia Comparisons",
         "Correlation",
-        "Data Explorer"
+        "Data Explorer",
+        "ML Prediction"
     ]
 )
 
@@ -487,7 +500,215 @@ with tab_data:
         file_name="anemia_filtered_data.csv",
         mime="text/csv"
     )
+# ---------------------------------------------------------
+# TAB 6: ML PREDICTION
+# ---------------------------------------------------------
+with tab_prediction:
+    st.subheader("Anemia Prediction using Machine Learning")
 
+    st.info(
+        "Enter the blood parameter values below to predict anemia "
+        "status using Logistic Regression and Random Forest."
+    )
+
+    st.caption(
+        "This is an academic machine-learning demonstration, "
+        "not a medical diagnosis."
+    )
+
+    @st.cache_resource
+    def train_prediction_models(data):
+        model_data = data[REQUIRED_COLUMNS].copy()
+
+        for column in REQUIRED_COLUMNS:
+            model_data[column] = pd.to_numeric(
+                model_data[column], errors="coerce"
+            )
+
+        model_data = model_data.dropna().drop_duplicates()
+        model_data = model_data[model_data["Result"].isin([0, 1])]
+
+        input_features = ["Gender"] + FEATURES
+
+        X = model_data[input_features]
+        y = model_data["Result"].astype(int)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.20,
+            random_state=42,
+            stratify=y
+        )
+
+        models = {
+            "Logistic Regression": Pipeline([
+                ("scaler", StandardScaler()),
+                ("classifier", LogisticRegression(
+                    max_iter=2000,
+                    class_weight="balanced",
+                    random_state=42
+                ))
+            ]),
+            "Random Forest": RandomForestClassifier(
+                n_estimators=300,
+                class_weight="balanced",
+                random_state=42
+            )
+        }
+
+        performance = {}
+
+        for name, model in models.items():
+            model.fit(X_train, y_train)
+            predictions = model.predict(X_test)
+
+            performance[name] = {
+                "Accuracy": accuracy_score(y_test, predictions),
+                "Precision": precision_score(
+                    y_test, predictions, zero_division=0
+                ),
+                "Recall": recall_score(
+                    y_test, predictions, zero_division=0
+                ),
+                "F1-score": f1_score(
+                    y_test, predictions, zero_division=0
+                ),
+                "Confusion Matrix": confusion_matrix(
+                    y_test, predictions, labels=[0, 1]
+                )
+            }
+
+        return models, performance, model_data
+
+    try:
+        models, performance, model_data = train_prediction_models(
+            df_original
+        )
+
+        st.subheader("Model Performance")
+
+        performance_table = pd.DataFrame({
+            name: {
+                metric: values[metric]
+                for metric in ["Accuracy", "Precision", "Recall", "F1-score"]
+            }
+            for name, values in performance.items()
+        }).T
+
+        st.dataframe(
+            performance_table.style.format("{:.3f}"),
+            use_container_width=True
+        )
+
+        st.caption(
+            "Metrics are calculated using a 20% test set. "
+            "Duplicate rows are removed before splitting the data."
+        )
+
+        st.subheader("Enter Your Blood Parameter Values")
+
+        st.write(
+            "Enter values for all five features to get a prediction."
+        )
+
+        input_features = ["Gender"] + FEATURES
+
+        gender_options = sorted(
+            model_data["Gender"].unique().tolist()
+        )
+
+        input_values = {}
+
+        with st.form("anemia_prediction_form"):
+
+            gender = st.selectbox(
+                "Gender (original dataset code)",
+                gender_options
+            )
+            input_values["Gender"] = gender
+
+            col1, col2 = st.columns(2)
+
+            for i, feature in enumerate(FEATURES):
+                minimum = float(model_data[feature].min())
+                maximum = float(model_data[feature].max())
+                median = float(model_data[feature].median())
+
+                with (col1 if i % 2 == 0 else col2):
+                    input_values[feature] = st.number_input(
+                        feature,
+                        min_value=minimum,
+                        max_value=maximum,
+                        value=median,
+                        step=0.1
+                    )
+
+            submitted = st.form_submit_button(
+                "Predict Anemia Status",
+                use_container_width=True
+            )
+
+        if submitted:
+            user_data = pd.DataFrame(
+                [input_values],
+                columns=input_features
+            )
+
+            st.subheader("Prediction Results")
+
+            result_columns = st.columns(2)
+
+            for i, (name, model) in enumerate(models.items()):
+                prediction = int(model.predict(user_data)[0])
+
+                if prediction == 1:
+                    label = "Anemia"
+                else:
+                    label = "No Anemia"
+
+                with result_columns[i]:
+                    st.markdown(f"**{name}**")
+                    if prediction == 1:
+                        st.error(f"Prediction: {label}")
+                    else:
+                        st.success(f"Prediction: {label}")
+
+                    probabilities = model.predict_proba(user_data)[0]
+                    classes = model.classes_
+                    predicted_probability = probabilities[
+                        list(classes).index(prediction)
+                    ]
+
+                    st.write(
+                        f"Model confidence score: "
+                        f"{predicted_probability * 100:.2f}%"
+                    )
+
+            st.caption(
+                "The confidence score is the model's estimated probability "
+                "for its predicted class. It is not a medical certainty."
+            )
+
+        st.divider()
+        st.subheader("Confusion Matrices")
+
+        matrix_columns = st.columns(2)
+
+        for i, (name, values) in enumerate(performance.items()):
+            with matrix_columns[i]:
+                st.write(f"**{name}**")
+
+                matrix_df = pd.DataFrame(
+                    values["Confusion Matrix"],
+                    index=["Actual No Anemia", "Actual Anemia"],
+                    columns=["Predicted No Anemia", "Predicted Anemia"]
+                )
+
+                st.dataframe(matrix_df, use_container_width=True)
+
+    except Exception as error:
+        st.error(f"Could not train the prediction models: {error}")
 st.divider()
 st.caption(
     "Academic EDA dashboard. This dashboard presents statistical "
